@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Комбинированная оценка качества перевода:
-1. С эталоном (Reference-based): BLEU, ROUGE, BERTScore.
-2. Без эталона (No-Reference): Semantic, Round-trip, NER, Cross-Entropy.
+1. С эталоном (Reference-based): COMET (нейросетевая метрика).
+2. Без эталона (No-Reference): Semantic, Round-trip, NER, Perplexity.
 3. Сравнение совокупных метрик и корреляция.
 """
 
@@ -17,8 +17,7 @@ from tqdm import tqdm
 import numpy as np
 
 # --- Метрики ---
-from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
-from rouge_score import rouge_scorer
+from evaluation_reference import ReferenceBasedEvaluator
 from bert_score import score as bert_score
 
 # --- Для NER и Perplexity ---
@@ -88,43 +87,25 @@ class LMStudioClient:
 # МОДУЛЬ ОЦЕНКИ С ЭТАЛОНОМ
 # ==========================================
 
-def evaluate_reference_based(translations: List[str], references: List[str]) -> Dict[str, Any]:
-    logger.info("Вычисление метрик с эталоном...")
+def evaluate_reference_based(sources: List[str], translations: List[str], references: List[str]) -> Dict[str, Any]:
+    """
+    Вычисляет метрики с эталоном используя COMET.
+    """
+    logger.info("Вычисление метрик с эталоном (COMET)...")
 
-    # BLEU
-    smoothie = SmoothingFunction().method4
-    bleu_score = corpus_bleu(
-        [[ref.split()] for ref in references],
-        [tr.split() for tr in translations],
-        smoothing_function=smoothie
-    )
+    # Инициализируем evaluator с COMET
+    evaluator = ReferenceBasedEvaluator()
 
-    # ROUGE
-    scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    rouge_scores = {'rouge1': [], 'rouge2': [], 'rougeL': []}
-    for tr, ref in zip(translations, references):
-        scores = scorer.score(ref, tr)
-        for k in rouge_scores:
-            rouge_scores[k].append(scores[k].fmeasure)
+    # Вычисляем COMET
+    results = evaluator.evaluate_all(sources, translations, references)
 
-    avg_rouge = {k: np.mean(v) for k, v in rouge_scores.items()}
+    comet_mean = results["comet"]["comet_mean"]
 
-    # BERTScore
-    try:
-        P, R, F1 = bert_score(translations, references, lang="en", verbose=False)
-        bert_f1 = F1.mean().item()
-    except Exception as e:
-        logger.warning(f"BERTScore error: {e}")
-        bert_f1 = 0.0
-
-    # Совокупная оценка (Reference Aggregate)
-    # Нормализуем BLEU (0-1) и используем среднее ROUGE и BERTScore
-    ref_aggregate = (bleu_score + avg_rouge['rougeL'] + bert_f1) / 3.0
+    # COMET уже является совокупной оценкой (она обучена предсказывать человеческую оценку)
+    ref_aggregate = comet_mean
 
     return {
-        "bleu": bleu_score,
-        "rouge": avg_rouge,
-        "bertscore_f1": bert_f1,
+        "comet": comet_mean,
         "aggregate_score": ref_aggregate
     }
 
@@ -366,8 +347,9 @@ class NoReferenceEvaluator:
         avg_ppl = np.mean(perplexity_scores)
 
         # Совокупная оценка (No-Ref Aggregate)
-        # Веса можно настроить. Например, семантика важнее.
-        weights = {"semantic": 0.4, "roundtrip": 0.3, "ner": 0.2, "perplexity": 0.1}
+        # Увеличиваем вес семантики и perplexity, снижаем вес round-trip BLEU
+        # Round-trip BLEU слишком чувствителен к формулировкам
+        weights = {"semantic": 0.50, "roundtrip": 0.10, "ner": 0.20, "perplexity": 0.20}
         no_ref_aggregate = (
                 avg_semantic * weights["semantic"] +
                 avg_roundtrip * weights["roundtrip"] +
@@ -444,11 +426,9 @@ def main():
     print("\n" + "="*40)
     print("ЧАСТЬ 1: ОЦЕНКА С ЭТАЛОНОМ")
     print("="*40)
-    ref_metrics = evaluate_reference_based(translations, references)
+    ref_metrics = evaluate_reference_based(sources, translations, references)
 
-    print(f"BLEU: {ref_metrics['bleu']:.4f}")
-    print(f"ROUGE-L: {ref_metrics['rouge']['rougeL']:.4f}")
-    print(f"BERTScore: {ref_metrics['bertscore_f1']:.4f}")
+    print(f"COMET (основная метрика): {ref_metrics['comet']:.4f}")
     print(f"--> Совокупная оценка (Ref): {ref_metrics['aggregate_score']:.4f}")
 
     # 5. Оценка без эталона (включая Back-translation и новые метрики)

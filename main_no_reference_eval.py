@@ -164,9 +164,17 @@ def calculate_metrics(sources: List[str], back_translations: List[str]) -> Dict[
     """Вычисляет метрики между оригиналом и обратным переводом."""
     results = {}
 
-    # 1. BLEU
-    logger.info("Calculating BLEU (Source vs Back-Translation)...")
-    # SacreBLEU ожидает список списков для референсов
+    # 1. chrF++ (основная метрика вместо BLEU)
+    logger.info("Calculating chrF++ (Source vs Back-Translation)...")
+    chrf_result = sacrebleu.corpus_chrf(back_translations, [[s] for s in sources], beta=3, word_order=2)
+    results['chrf_pp'] = {
+        'score': chrf_result.score,
+        'char_order': chrf_result.char_order,
+        'word_order': chrf_result.word_order
+    }
+
+    # 2. BLEU (для сравнения)
+    logger.info("Calculating BLEU (Source vs Back-Translation, for comparison)...")
     bleu_result = sacrebleu.corpus_bleu(back_translations, [[s] for s in sources])
     results['bleu'] = {
         'score': bleu_result.score,
@@ -175,7 +183,7 @@ def calculate_metrics(sources: List[str], back_translations: List[str]) -> Dict[
         'precisions': bleu_result.precisions
     }
 
-    # 2. ROUGE
+    # 3. ROUGE
     logger.info("Calculating ROUGE (Source vs Back-Translation)...")
     scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=False)
     rouge_scores = {'rouge1': [], 'rouge2': [], 'rougeL': []}
@@ -190,7 +198,7 @@ def calculate_metrics(sources: List[str], back_translations: List[str]) -> Dict[
         for key, vals in rouge_scores.items()
     }
 
-    # 3. BERTScore
+    # 4. BERTScore
     logger.info("Calculating BERTScore (Source vs Back-Translation)...")
     # BERTScore лучше работает, если языки совпадают (RU vs RU)
     P, R, F1 = bert_score(back_translations, sources, lang='ru', verbose=True)
@@ -295,13 +303,14 @@ def main():
     print("="*60)
     print(f"{'Метрика':<25} {'Значение':>15}")
     print("-" * 45)
-    print(f"BLEU Score:          {metrics['bleu']['score']:>15.4f}")
-    print(f"ROUGE1 F1:           {metrics['rouge']['rouge1']:>15.4f}")
-    print(f"ROUGE2 F1:           {metrics['rouge']['rouge2']:>15.4f}")
-    print(f"ROUGEL F1:           {metrics['rouge']['rougeL']:>15.4f}")
-    print(f"BERTScore Precision: {metrics['bertscore']['precision']:>15.4f}")
-    print(f"BERTScore Recall:    {metrics['bertscore']['recall']:>15.4f}")
-    print(f"BERTScore F1:        {metrics['bertscore']['f1']:>15.4f}")
+    print(f"chrF++ Score:          {metrics['chrf_pp']['score']:>15.4f}")
+    print(f"BLEU Score (сравнение):{metrics['bleu']['score']:>15.4f}")
+    print(f"ROUGE1 F1:             {metrics['rouge']['rouge1']:>15.4f}")
+    print(f"ROUGE2 F1:             {metrics['rouge']['rouge2']:>15.4f}")
+    print(f"ROUGEL F1:             {metrics['rouge']['rougeL']:>15.4f}")
+    print(f"BERTScore Precision:   {metrics['bertscore']['precision']:>15.4f}")
+    print(f"BERTScore Recall:      {metrics['bertscore']['recall']:>15.4f}")
+    print(f"BERTScore F1:          {metrics['bertscore']['f1']:>15.4f}")
 
     # Сохранение в JSON
     output_file = "results_no_reference.json"

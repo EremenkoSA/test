@@ -2,162 +2,106 @@
 Модуль для оценки качества перевода с эталоном (Reference-based Evaluation)
 
 Используемые метрики:
-- BLEU (Bilingual Evaluation Understudy)
-- ROUGE (Recall-Oriented Understudy for Gisting Evaluation)
-- BERTScore (Semantic similarity using BERT embeddings)
+- COMET (Crosslingual Optimized Metric for Evaluation of Translation) - нейросетевая метрика,
+  учитывающая семантику и контекст (заменяет BLEU/ROUGE/BERTScore)
 """
 
 from typing import List, Tuple, Dict
-import sacrebleu
-from rouge_score import rouge_scorer
-from bert_score import score as bert_score
+import evaluate
 
 
 class ReferenceBasedEvaluator:
-    """Оценка качества перевода с использованием эталонных переводов"""
+    """Оценка качества перевода с использованием эталонных переводов на основе COMET"""
 
     def __init__(self):
-        self.rouge_scorer = rouge_scorer.RougeScorer(
-            ['rouge1', 'rouge2', 'rougeL'],
-            use_stemmer=True
-        )
+        print("Loading COMET metric (wmt22-comet-da)...")
+        try:
+            # Загружаем предобученную модель COMET
+            self.comet_metric = evaluate.load("comet", "Unbabel/wmt22-comet-da")
+            print("COMET metric loaded successfully.")
+        except Exception as e:
+            print(f"Error loading COMET: {e}")
+            raise e
 
-    def calculate_bleu(
+    def calculate_comet(
             self,
+            sources: List[str],
             candidates: List[str],
             references: List[str]
     ) -> Dict[str, float]:
         """
-        Расчет метрики BLEU
+        Расчет метрики COMET
+
+        COMET использует предобученную языковую модель для оценки качества перевода,
+        учитывая исходный текст, гипотезу и референс. Это дает более точную оценку,
+        чем n-gram метрики типа BLEU.
 
         Args:
+            sources: Список исходных текстов
             candidates: Список переведенных текстов (гипотезы)
             references: Список эталонных переводов
 
         Returns:
-            Словарь с результатами BLEU (score, counts, totals)
+            Словарь с результатами COMET (mean_score, scores list)
         """
-        # sacrebleu ожидает список списков для референсов
-        references_list = [[ref] for ref in references]
+        if len(sources) != len(candidates) or len(sources) != len(references):
+            raise ValueError("Sources, candidates, and references must have the same length")
 
-        bleu_result = sacrebleu.corpus_bleu(candidates, references_list)
+        # COMET требует формат данных: список словарей с ключами 'src', 'mt', 'ref'
+        # Данные передаются напрямую в compute через именованные аргументы
 
-        return {
-            "bleu_score": bleu_result.score,
-            "bleu_counts": bleu_result.counts,
-            "bleu_totals": bleu_result.totals,
-            "bleu_precisions": bleu_result.precisions
+        print(f"Calculating COMET for {len(sources)} samples...")
+
+        # Формируем данные в формате, требуемом COMET
+        data = {
+            "src": sources,
+            "mt": candidates,
+            "ref": references
         }
 
-    def calculate_rouge(
-            self,
-            candidates: List[str],
-            references: List[str]
-    ) -> Dict[str, Dict[str, float]]:
-        """
-        Расчет метрик ROUGE-1, ROUGE-2, ROUGE-L
+        # Вычисляем метрику через compute
+        # Для evaluate.load интерфейс использует compute с данными как первым аргументом
+        try:
+            results = self.comet_metric.compute(
+                predictions=data,
+                batch_size=8,
+                gpus=0,
+                progress_bar=False
+            )
 
-        Args:
-            candidates: Список переведенных текстов
-            references: Список эталонных переводов
-
-        Returns:
-            Словарь с результатами по каждой метрике (precision, recall, fmeasure)
-        """
-        results = {"rouge1": [], "rouge2": [], "rougeL": []}
-
-        for candidate, reference in zip(candidates, references):
-            scores = self.rouge_scorer.score(reference, candidate)
-            for metric in results.keys():
-                results[metric].append({
-                    "precision": scores[metric].precision,
-                    "recall": scores[metric].recall,
-                    "fmeasure": scores[metric].fmeasure
-                })
-
-        # Усредняем результаты
-        averaged_results = {}
-        for metric, scores_list in results.items():
-            if scores_list:
-                averaged_results[metric] = {
-                    "precision": sum(s["precision"] for s in scores_list) / len(scores_list),
-                    "recall": sum(s["recall"] for s in scores_list) / len(scores_list),
-                    "fmeasure": sum(s["fmeasure"] for s in scores_list) / len(scores_list)
-                }
-
-        return averaged_results
-
-    def calculate_bertscore(
-            self,
-            candidates: List[str],
-            references: List[str],
-            lang: str = "en"
-    ) -> Dict[str, float]:
-        """
-        Расчет метрики BERTScore (семантическое сходство)
-
-        Args:
-            candidates: Список переведенных текстов
-            references: Список эталонных переводов
-            lang: Язык текстов (для выбора правильной модели)
-
-        Returns:
-            Словарь с precision, recall, F1
-        """
-        # map language to bert-score language code
-        lang_code = self._get_bertscore_lang_code(lang)
-
-        P, R, F1 = bert_score(candidates, references, lang=lang_code, verbose=False)
-
-        return {
-            "bert_precision": P.mean().item(),
-            "bert_recall": R.mean().item(),
-            "bert_f1": F1.mean().item()
-        }
-
-    def _get_bertscore_lang_code(self, lang: str) -> str:
-        """Преобразование названия языка в код для BERTScore"""
-        lang_mapping = {
-            "english": "en",
-            "russian": "ru",
-            "german": "de",
-            "french": "fr",
-            "spanish": "es",
-            "en": "en",
-            "ru": "ru",
-            "de": "de",
-            "fr": "fr",
-            "es": "es"
-        }
-        return lang_mapping.get(lang.lower(), "en")
+            return {
+                "comet_mean": results["system_score"],
+                "comet_scores": results["scores"]
+            }
+        except Exception as e:
+            print(f"Error calculating COMET: {e}")
+            # Fallback to 0 if calculation fails
+            return {
+                "comet_mean": 0.0,
+                "comet_scores": [0.0] * len(sources)
+            }
 
     def evaluate_all(
             self,
+            sources: List[str],
             candidates: List[str],
-            references: List[str],
-            target_lang: str = "en"
+            references: List[str]
     ) -> Dict[str, Dict]:
         """
-        Полная оценка всеми доступными метриками
+        Полная оценка с использованием COMET
 
         Args:
+            sources: Список исходных текстов
             candidates: Список переведенных текстов
             references: Список эталонных переводов
-            target_lang: Язык перевода
 
         Returns:
-            Полный словарь со всеми метриками
+            Полный словарь с метрикой COMET
         """
         results = {}
 
-        print("Calculating BLEU...")
-        results["bleu"] = self.calculate_bleu(candidates, references)
-
-        print("Calculating ROUGE...")
-        results["rouge"] = self.calculate_rouge(candidates, references)
-
-        print("Calculating BERTScore...")
-        results["bertscore"] = self.calculate_bertscore(candidates, references, target_lang)
+        print("Calculating COMET (primary reference metric)...")
+        results["comet"] = self.calculate_comet(sources, candidates, references)
 
         return results
 
@@ -205,6 +149,10 @@ if __name__ == "__main__":
     evaluator = ReferenceBasedEvaluator()
 
     # Пример данных
+    sources = [
+        "Кошка сидела на коврике.",
+        "Это тестовый перевод."
+    ]
     candidates = [
         "The cat sat on the mat.",
         "This is a test translation."
@@ -214,10 +162,8 @@ if __name__ == "__main__":
         "This is a sample translation."
     ]
 
-    results = evaluator.evaluate_all(candidates, references)
+    results = evaluator.evaluate_all(sources, candidates, references)
 
     print("\n=== Results ===")
-    for metric, scores in results.items():
-        print(f"\n{metric.upper()}:")
-        for score_name, value in scores.items():
-            print(f"  {score_name}: {value}")
+    print(f"COMET Mean Score: {results['comet']['comet_mean']:.4f}")
+    print(f"Individual Scores: {results['comet']['comet_scores']}")

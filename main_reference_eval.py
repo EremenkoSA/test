@@ -94,25 +94,29 @@ def run_reference_evaluation(
     print("РЕЗУЛЬТАТЫ ОЦЕНКИ")
     print("=" * 60)
 
-    print(f"\n{'Метрика':<20} {'Значение':<15}")
-    print("-" * 35)
+    print(f"\n{'Метрика':<25} {'Значение':<15}")
+    print("-" * 40)
 
-    # BLEU
+    # chrF++ (основная метрика)
+    chrf_pp = results.get("chrf_pp", {})
+    print(f"chrF++ (основная):       {chrf_pp.get('chrf_pp_score', 'N/A'):.4f}")
+
+    # BLEU (для сравнения)
     bleu = results.get("bleu", {})
-    print(f"BLEU Score:          {bleu.get('bleu_score', 'N/A'):.2f}")
+    print(f"BLEU Score (сравнение):  {bleu.get('bleu_score', 'N/A'):.4f}")
 
     # ROUGE
     rouge = results.get("rouge", {})
     for metric in ["rouge1", "rouge2", "rougeL"]:
         if metric in rouge:
             f1 = rouge[metric].get("fmeasure", 0)
-            print(f"{metric.upper()} F1:           {f1:.4f}")
+            print(f"{metric.upper()} F1:                 {f1:.4f}")
 
     # BERTScore
     bertscore = results.get("bertscore", {})
-    print(f"BERTScore Precision: {bertscore.get('bert_precision', 'N/A'):.4f}")
-    print(f"BERTScore Recall:    {bertscore.get('bert_recall', 'N/A'):.4f}")
-    print(f"BERTScore F1:        {bertscore.get('bert_f1', 'N/A'):.4f}")
+    print(f"BERTScore Precision:     {bertscore.get('bert_precision', 'N/A'):.4f}")
+    print(f"BERTScore Recall:        {bertscore.get('bert_recall', 'N/A'):.4f}")
+    print(f"BERTScore F1:            {bertscore.get('bert_f1', 'N/A'):.4f}")
 
     # Сохранение результатов в JSON
     output_data = {
