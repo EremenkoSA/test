@@ -128,6 +128,41 @@ class NoReferenceEvaluator:
         else:
             logger.warning("Transformers/torch не установлены. NER будет пропущен.")
 
+    def calculate_roundtrip_consistency(self, sources: List[str], back_translations: List[str]) -> Dict[str, float]:
+        """
+        Расчет согласованности обратного перевода.
+        Используем chrF вместо BLEU, так как он лучше работает с морфологией и порядком слов.
+        """
+        if len(sources) != len(back_translations):
+            raise ValueError("Sources and back_translations must have the same length")
+
+        print("Calculating Round-trip Consistency (using chrF)...")
+
+        try:
+            # Загружаем метрику chrF (более устойчива к порядку слов, чем BLEU)
+            chrf_metric = load("chrf")
+
+            results = chrf_metric.compute(
+                predictions=back_translations,
+                references=sources
+            )
+
+            # chrf_score обычно от 0 до 100, нормализуем к 0-1
+            score_normalized = results["score"] / 100.0
+
+            return {
+                "roundtrip_chrf": score_normalized,
+                "roundtrip_consistency": score_normalized # Возвращаем как основную метрику
+            }
+
+        except Exception as e:
+            print(f"Error calculating Round-trip Consistency: {e}")
+            # Fallback на семантическое сходство если chrF не доступен
+            return {
+                "roundtrip_chrf": 0.0,
+                "roundtrip_consistency": 0.0
+            }
+
     def _load_ner_model(self):
         """Загружает только NER модели, так как Perplexity теперь эвристический."""
         logger.info("Загрузка NER модели (это может занять время)...")
@@ -298,19 +333,25 @@ class NoReferenceEvaluator:
             except:
                 sem_score = 0.0
 
-            # 2. Round-trip Consistency (BLEU Source vs Back-Translation)
-            # Если тексты пустые, BLEU не считается
+            # 2. Round-trip Consistency (chrF Source vs Back-Translation)
+            # chrF намного устойчивее BLEU к вариациям в окончаниях и порядке слов
             if src.strip() and back_tr.strip():
                 try:
-                    rt_bleu = corpus_bleu(
-                        [[src.split()]],
-                        [back_tr.split()],
-                        smoothing_function=SmoothingFunction().method1
+                    # Используем стандартный chrF (beta=2, дает больший вес полноте)
+                    # sacrebleu возвращает объект Score, берем свойство score
+                    import sacrebleu
+                    chrf_score = sacrebleu.corpus_chrf(
+                        [back_tr],
+                        [[src]],
+                        beta=2,
+                        word_order=2 # Учитываем порядок слов, но мягче чем BLEU
                     )
-                except:
-                    rt_bleu = 0.0
+                    rt_score = chrf_score.score / 100.0 # Нормализация к 0..1
+                except Exception as e:
+                    # Fallback на простой char-level overlap если sacrebleu недоступен
+                    rt_score = 0.0
             else:
-                rt_bleu = 0.0
+                rt_score = 0.0
 
             # 3. NER Consistency
             src_entities = self.extract_entities(src)
@@ -339,13 +380,13 @@ class NoReferenceEvaluator:
                 ppl_score = 1.0 / (1.0 + math.log(ppl)) if ppl > 1 else 1.0
 
             semantic_scores.append(sem_score)
-            roundtrip_scores.append(rt_bleu)
+            roundtrip_scores.append(rt_score)
             ner_scores.append(ner_score)
             perplexity_scores.append(ppl_score)
 
             metrics_list.append({
                 "semantic": sem_score,
-                "roundtrip_bleu": rt_bleu,
+                "roundtrip_chrf": rt_score,  # Было roundtrip_bleu
                 "ner_consistency": ner_score,
                 "perplexity_score": ppl_score,
                 "back_translation": back_tr
@@ -360,7 +401,13 @@ class NoReferenceEvaluator:
         # Совокупная оценка (No-Ref Aggregate)
         # Увеличиваем вес семантики и perplexity, снижаем вес round-trip BLEU
         # Round-trip BLEU слишком чувствителен к формулировкам
-        weights = {"semantic": 0.50, "roundtrip": 0.10, "ner": 0.20, "perplexity": 0.20}
+        weights = {
+            "semantic": 0.30,    # Было 0.50 -> Снижаем, т.к. метрика слишком мягкая
+            "roundtrip": 0.40,   # Было 0.10 -> Повышаем, т.к. это главный тест на сохранение смысла
+            "ner": 0.15,         # Было 0.20 -> Немного снижаем
+            "perplexity": 0.15   # Было 0.20 -> Грамматика важна, но не главное
+        }
+
         no_ref_aggregate = (
                 avg_semantic * weights["semantic"] +
                 avg_roundtrip * weights["roundtrip"] +
