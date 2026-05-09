@@ -22,7 +22,7 @@ from bert_score import score as bert_score
 
 # --- Для NER и Perplexity ---
 try:
-    from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoModelForCausalLM
+    from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoModelForCausalLM, pipeline, Pipeline
     import torch
     from collections import Counter
     TRANSFORMERS_AVAILABLE = True
@@ -124,20 +124,20 @@ class NoReferenceEvaluator:
         self.ner_tokenizer = None
 
         if TRANSFORMERS_AVAILABLE:
-            self._load_ner_models()
+            self._load_ner_model()
         else:
             logger.warning("Transformers/torch не установлены. NER будет пропущен.")
 
-    def _load_ner_models(self):
+    def _load_ner_model(self):
         """Загружает только NER модели, так как Perplexity теперь эвристический."""
         logger.info("Загрузка NER модели (это может занять время)...")
         try:
             # Используем русскую модель для NER, так как обратный перевод на русский
-            # Модель "blanchet/bert-base-cased-finetuned-ner-russian" или аналоги
-            ner_model_name = "blanchet/bert-base-cased-finetuned-ner-russian"
+            # Модель "Gherman/bert-base-NER-Russian" - современная и точная модель
+            ner_model_name = "Gherman/bert-base-NER-Russian"
             logger.info(f"Загрузка модели {ner_model_name}...")
             self.ner_tokenizer = AutoTokenizer.from_pretrained(ner_model_name)
-            self.ner_model = AutoModelForTokenClassification.from_pretrained(ner_model_name)
+            self.ner_model = pipeline("ner", model=ner_model_name, aggregation_strategy="simple")
             logger.info("NER модель загружена успешно.")
         except Exception as e:
             logger.error(f"Не удалось загрузить NER модель: {e}. Попробуем запасной вариант...")
@@ -159,6 +159,17 @@ class NoReferenceEvaluator:
             return set()
 
         try:
+            # Если используется pipeline (новая модель), вызываем напрямую
+            if isinstance(self.ner_model, Pipeline):
+                results = self.ner_model(text)
+                entities = set()
+                for result in results:
+                    entity_text = result.get('entity_group', result.get('entity', ''))
+                    if entity_text:
+                        entities.add(entity_text.strip())
+                return entities
+
+            # Старый формат с tokenizer и model
             inputs = self.ner_tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
             with torch.no_grad():
                 outputs = self.ner_model(**inputs)
