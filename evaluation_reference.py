@@ -60,18 +60,35 @@ class ReferenceBasedEvaluator:
         }
 
         # Вычисляем метрику через compute
-        # Для evaluate.load интерфейс использует compute с данными как первым аргументом
+        # Для evaluate.load интерфейс использует compute с отдельными аргументами:
+        # sources, predictions, references
         try:
             results = self.comet_metric.compute(
-                predictions=data,
-                batch_size=8,
-                gpus=0,
+                sources=data["src"],
+                predictions=data["mt"],
+                references=data["ref"],
                 progress_bar=False
             )
 
+            # Обработка различных форматов вывода COMET
+            # В новых версиях может быть 'mean_score' вместо 'system_score'
+            mean_score = results.get("system_score") or results.get("mean_score")
+
+            # Если нет готового среднего, считаем его из списка оценок
+            if mean_score is None and "scores" in results:
+                scores_list = results["scores"]
+                if scores_list:
+                    mean_score = sum(scores_list) / len(scores_list)
+
+            # Fallback к 0, если ничего не нашли
+            if mean_score is None:
+                mean_score = 0.0
+
+            scores_list = results.get("scores", [0.0] * len(sources))
+
             return {
-                "comet_mean": results["system_score"],
-                "comet_scores": results["scores"]
+                "comet_mean": float(mean_score),
+                "comet_scores": [float(s) for s in scores_list]
             }
         except Exception as e:
             print(f"Error calculating COMET: {e}")
