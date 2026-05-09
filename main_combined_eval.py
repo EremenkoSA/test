@@ -138,103 +138,71 @@ class NoReferenceEvaluator:
         self.source_lang = source_lang
         self.target_lang = target_lang
 
-        # Загрузка моделей для NER и Perplexity если доступно
+        # Загрузка моделей для NER (Perplexity теперь эвристический и не требует моделей)
         self.ner_model = None
         self.ner_tokenizer = None
-        self.lm_model = None
-        self.lm_tokenizer = None
 
         if TRANSFORMERS_AVAILABLE:
-            self._load_models()
+            self._load_ner_models()
         else:
-            logger.warning("Transformers/torch не установлены. NER и Perplexity будут пропущены.")
+            logger.warning("Transformers/torch не установлены. NER будет пропущен.")
 
-    def _load_models(self):
-        logger.info("Загрузка моделей для продвинутых метрик (это может занять время)...")
+    def _load_ner_models(self):
+        """Загружает только NER модели, так как Perplexity теперь эвристический."""
+        logger.info("Загрузка NER модели (это может занять время)...")
         try:
-            # NER Model (multilingual)
-            self.ner_tokenizer = AutoTokenizer.from_pretrained("dbmdz/bert-large-cased-finetuned-conll03-english")
-            self.ner_model = AutoModelForTokenClassification.from_pretrained("dbmdz/bert-large-cased-finetuned-conll03-english")
-            # Примечание: для русского лучше использовать ruBert, но для простоты возьмем английскую модель
-            # и будем оценивать NER на обратном переводе (который на русском, но сущности часто транслитерируются или сохраняются)
-            # Для большей точности можно взять модель типа "dslim/bert-base-NER"
-            self.ner_tokenizer = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
-            self.ner_model = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
-
-            # LM Model для Perplexity (используем небольшую модель для скорости)
-            # Используем distilgpt2 для оценки энтропии английского текста или русскую, если обратный перевод русский
-            # Так как обратный перевод на язык источника (RU), нужна русская LM.
-            # Используем ruGPT-3 small или аналогичную доступную.
-            # Для универсальности возьмем multilingual модель, если есть, или просто пропустим, если тяжело.
-            # Заменим на оценку перплексии через саму LM Studio если бы она отдавала logits, но она не отдает.
-            # Поэтому используем локальную маленькую модель.
-            # Чтобы не перегружать, возьмем "ai-forever/ruGPT-3-small" или similar.
-            # Если нет интернета при запуске, этот блок упадет, поэтому обернем в try.
-            logger.info("Загрузка языковой модели для оценки перплексии (ruGPT-3-small)...")
-            self.lm_tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruGPT-3-small")
-            self.lm_model = AutoModelForCausalLM.from_pretrained("ai-forever/ruGPT-3-small")
-            logger.info("Модели загружены успешно.")
+            # Используем русскую модель для NER, так как обратный перевод на русский
+            # Модель "blanchet/bert-base-cased-finetuned-ner-russian" или аналоги
+            ner_model_name = "blanchet/bert-base-cased-finetuned-ner-russian"
+            logger.info(f"Загрузка модели {ner_model_name}...")
+            self.ner_tokenizer = AutoTokenizer.from_pretrained(ner_model_name)
+            self.ner_model = AutoModelForTokenClassification.from_pretrained(ner_model_name)
+            logger.info("NER модель загружена успешно.")
         except Exception as e:
-            logger.error(f"Не удалось загрузить модели для продвинутых метрик: {e}")
-            self.ner_model = None
-            self.lm_model = None
+            logger.error(f"Не удалось загрузить NER модель: {e}. Попробуем запасной вариант...")
+            try:
+                # Запасной вариант: sergeyzh/BERT-ner-ru
+                ner_model_name = "sergeyzh/BERT-ner-ru"
+                logger.info(f"Загрузка запасной модели {ner_model_name}...")
+                self.ner_tokenizer = AutoTokenizer.from_pretrained(ner_model_name)
+                self.ner_model = AutoModelForTokenClassification.from_pretrained(ner_model_name)
+                logger.info("Запасная NER модель загружена успешно.")
+            except Exception as e2:
+                logger.error(f"Не удалось загрузить ни одну NER модель: {e2}. NER будет пропущен.")
+                self.ner_model = None
+                self.ner_tokenizer = None
 
     def extract_entities(self, text: str) -> set:
+        """Извлекает именованные сущности из текста используя русскую NER модель."""
         if not self.ner_model or not text:
             return set()
 
-        # Модель dslim/bert-base-NER обучена на английском.
-        # Обратный перевод у нас на русском. Это проблема.
-        # Решение: Использовать модель, поддерживающую русский, например, "blanchet/bert-base-cased-finetuned-ner-russian"
-        # Или просто пропустить NER если модель не подходит.
-        # Попробуем загрузить русскую NER модель динамически если основная не подошла.
-
-        # Исправление: используем модель, которая поддерживает русский, если она была загружена.
-        # В _load_models выше я загрузил английскую. Давайте исправим стратегию.
-        # Для демо-целей, если текст русский, а модель английская - NER будет плохим.
-        # Давайте попробуем использовать "sergeyzh/BERT-ner-ru" если получится, иначе пропустим.
-
-        # Упрощение для надежности кода:
-        # Если у нас нет русской NER модели, мы не можем качественно оценить NER Consistency.
-        # В рамках этого примера я реализую заглушку или простую эвристику, если модель не загружена.
-        # Но предположим, что пользователь может установить нужную модель.
-        # Для текущего кода:尝试 загрузить русскую модель прямо здесь, если глобальная не та.
-
         try:
-            if self.ner_tokenizer is None:
-                # Попытка загрузить русскую модель "on the fly"
-                ner_ru_tokenizer = AutoTokenizer.from_pretrained("sergeyzh/BERT-ner-ru")
-                ner_ru_model = AutoModelForTokenClassification.from_pretrained("sergeyzh/BERT-ner-ru")
-            else:
-                # Проверка, та ли модель загружена (по названию класса или конфигурации сложно, доверимся пользователю)
-                # Для простоты, если self.ner_model есть, используем её.
-                ner_ru_tokenizer = self.ner_tokenizer
-                ner_ru_model = self.ner_model
-
-            inputs = ner_ru_tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+            inputs = self.ner_tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
             with torch.no_grad():
-                outputs = ner_ru_model(**inputs)
+                outputs = self.ner_model(**inputs)
 
             predictions = torch.argmax(outputs.logits, dim=2)
-            tokens = ner_ru_tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-            labels = ner_ru_tokenizer.get_special_tokens_mask() # упрощенно
+            tokens = self.ner_tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
 
-            # Извлечение сущностей (упрощенно)
+            # Извлечение сущностей
             entities = set()
             current_entity = []
-            label_names = ner_ru_tokenizer.id2label if hasattr(ner_ru_tokenizer, 'id2label') else {}
 
             # Маппинг ID в лейблы из модели
-            id2label = ner_ru_model.config.id2label
+            id2label = self.ner_model.config.id2label
 
             for i, token_id in enumerate(inputs["input_ids"][0]):
-                if token_id == ner_ru_tokenizer.cls_token_id or token_id == ner_ru_tokenizer.sep_token_id:
+                if token_id == self.ner_tokenizer.cls_token_id or token_id == self.ner_tokenizer.sep_token_id:
                     continue
-                pred_label = id2label[predictions[0][i].item()]
+                if i >= len(predictions[0]):
+                    break
+
+                pred_label = id2label.get(predictions[0][i].item(), 'O')
                 if pred_label != 'O':
                     # Удаляем префиксы B-, I-
                     entity_type = pred_label.split('-')[-1]
-                    token_str = tokens[i].replace('##', '')
+                    token_str = tokens[i].replace('##', '').replace('▁', '')
                     current_entity.append(token_str)
                 else:
                     if current_entity:
@@ -244,31 +212,61 @@ class NoReferenceEvaluator:
                 entities.add(" ".join(current_entity))
             return entities
         except Exception as e:
-            # logger.warning(f"NER extraction failed: {e}")
+            logger.warning(f"NER extraction failed: {e}")
             return set()
 
     def calculate_perplexity(self, text: str) -> float:
-        if not self.lm_model or not text:
-            return 0.0
+        """
+        Рассчитывает эвристическую перплексию (оценку гладкости текста) без использования тяжелых LM.
+        Основано на:
+        1. Повторении n-грамм (чем больше повторов, тем ниже качество / выше перплексия).
+        2. Соотношении уникальных токенов к общей длине.
+        3. Длине предложения (слишком короткие могут быть обрывками).
 
-        try:
-            encodings = self.lm_tokenizer(text, return_tensors="pt")
-            input_ids = encodings.input_ids
-            target_ids = input_ids.clone()
+        Возвращает значение в диапазоне ~1.0 (отличный текст) до >50.0 (бессвязный набор слов).
+        """
+        if not text or len(text.strip()) < 2:
+            return 100.0  # Высокая перплексия для пустых текстов
 
-            with torch.no_grad():
-                outputs = self.lm_model(input_ids, labels=target_ids)
-                loss = outputs.loss
+        tokens = text.lower().split()
+        if len(tokens) == 0:
+            return 100.0
 
-            # Perplexity = exp(loss)
-            perplexity = torch.exp(loss).item()
-            # Нормализуем: чем меньше perplexity, тем лучше.
-            # Для агрегации превратим в score: 1 / (1 + log(perplexity)) или просто ограничим.
-            # Вернем сырое значение для логирования, а скор нормализуем позже.
-            return perplexity
-        except Exception as e:
-            # logger.warning(f"Perplexity calculation failed: {e}")
-            return float('inf')
+        # 1. Оценка повторяемости (Unigram repetition penalty)
+        unique_tokens = set(tokens)
+        uniqueness_ratio = len(unique_tokens) / len(tokens)
+
+        # 2. Bigram repetition (насколько часто повторяются пары слов)
+        bigrams = [f"{tokens[i]} {tokens[i+1]}" for i in range(len(tokens)-1)]
+        if len(bigrams) > 0:
+            unique_bigrams = set(bigrams)
+            bigram_repetition = 1.0 - (len(unique_bigrams) / len(bigrams))
+        else:
+            bigram_repetition = 0.0
+
+        # 3. Штраф за слишком короткие тексты (менее 3 слов считается ненадежным)
+        length_penalty = 1.0
+        if len(tokens) < 3:
+            length_penalty = 2.0
+        elif len(tokens) < 5:
+            length_penalty = 1.5
+
+        # Эвристический расчет "псевдо-перплексии"
+        # Базовое значение + штрафы
+        # Если текст уникальный (ratio ~1.0) и нет повторов биграмм, перплексия низкая (~1.0-5.0)
+        # Если много повторов, растет экспоненциально
+
+        base_ppl = 1.0
+        # Штраф за неуникальность: если ratio=0.5, множитель = 2.0
+        uniqueness_penalty = (1.0 / uniqueness_ratio) if uniqueness_ratio > 0 else 10.0
+
+        # Штраф за повторы биграмм: если 50% повторов, добавляем значительный штраф
+        bigram_penalty = 1.0 + (bigram_repetition * 10.0)
+
+        calculated_ppl = base_ppl * uniqueness_penalty * bigram_penalty * length_penalty
+
+        # Ограничиваем разумными пределами для интерпретации
+        return min(max(calculated_ppl, 1.0), 500.0)
 
     def evaluate_no_reference(self, sources: List[str], translations: List[str]) -> Tuple[List[Dict], Dict]:
         logger.info("Выполнение оценки без эталона (Back-translation + Advanced Metrics)...")
